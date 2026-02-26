@@ -15,19 +15,86 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 import logging
 from pathlib import Path
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-# LangChain imports
+import time
+import random
+import uuid
+import hashlib
+# Prefer LangChain's splitter, but provide a minimal fallback if unavailable
 try:
-    from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-    from langchain_huggingface import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import FAISS
-    from langchain.schema import Document
-except ImportError:
-    print("⚠️ LangChain/FAISS/HuggingFace not installed. Please run: pip install langchain langchain-community langchain-huggingface faiss-cpu pypdf sentence-transformers")
-    exit(1)
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except Exception:
+    class RecursiveCharacterTextSplitter:
+        def __init__(self, chunk_size=1000, chunk_overlap=200):
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+
+        def split_documents(self, documents):
+            out = []
+            for doc in documents:
+                text = getattr(doc, 'page_content', str(doc))
+                start = 0
+                length = len(text)
+                step = max(1, self.chunk_size - self.chunk_overlap)
+                while start < length:
+                    end = min(start + self.chunk_size, length)
+                    chunk = text[start:end]
+                    meta = getattr(doc, 'metadata', None) or {}
+                    out.append(Document(page_content=chunk, metadata=meta))
+                    start += step
+            return out
+
+# Provide a resilient `Document` class: prefer langchain's, else fallback to a simple local class
+try:
+    from langchain.schema import Document as _LC_Document
+    Document = _LC_Document
+except Exception:
+    try:
+        from langchain.docstore.document import Document as _LC_Document
+        Document = _LC_Document
+    except Exception:
+        class Document:
+            def __init__(self, page_content, metadata=None):
+                self.page_content = page_content
+                self.metadata = metadata or {}
+                # provide an `id` attribute expected by some vectorstore implementations
+                self.id = str(self.metadata.get('id') or uuid.uuid4())
+# LangChain imports
+# Defer heavy LangChain-related imports to runtime inside the RAG system
+# to avoid import-time failures when running the FastAPI app without RAG.
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# ===== Token Bucket Rate Limiter for Gemini API =====
+class RateLimiter:
+    """Token bucket rate limiter to throttle API requests per minute."""
+    def __init__(self, min_interval_sec: float = 1.0):
+        """
+        Args:
+            min_interval_sec: Minimum seconds between API requests to stay under rate limit.
+                              Set to 1.0 = max 60 req/min, 2.0 = max 30 req/min, etc.
+        """
+        self.min_interval_sec = min_interval_sec
+        self.last_request_time = 0.0
+
+    def wait_if_needed(self):
+        """Block until safe to make next API request."""
+        # Allow skipping the internal sleep-based rate limiter when rapid-fail behavior
+        # is desired (e.g., during development or when the caller prefers immediate
+        # failures instead of long blocking retries). Set environment variable
+        # `SKIP_RATE_LIMIT=true` to enable.
+        if os.getenv("SKIP_RATE_LIMIT", "false").lower() in ("1", "true", "yes"):
+            logger.info("⚡ SKIP_RATE_LIMIT enabled: not sleeping before Gemini request")
+            self.last_request_time = time.time()
+            return
+
+        now = time.time()
+        time_since_last = now - self.last_request_time
+        wait_time = max(0, self.min_interval_sec - time_since_last)
+        if wait_time > 0:
+            logger.info(f"⏱️ Rate limiting: waiting {wait_time:.2f}s before next Gemini request")
+            time.sleep(wait_time)
+        self.last_request_time = time.time()
 
 def get_api_key_from_file():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,15 +106,8 @@ def get_api_key_from_file():
         print(f"❌ Error reading API key from api_key.txt: {e}")
         return None
 
-try:
-    from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-    from langchain_huggingface import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import FAISS
-    from langchain.schema import Document
-    from langchain.text_splitter import RecursiveCharacterTextSplitter 
-except ImportError:
-    print("⚠️ LangChain/FAISS/HuggingFace tidak terinstal. Pastikan Anda sudah menjalankan: pip install langchain langchain-community langchain-huggingface faiss-cpu pypdf sentence-transformers")
-    exit(1)
+# Heavy LangChain-related imports are deferred into the RAG system methods
+# to avoid import-time failures when running the FastAPI app without those packages.
 
 class FitbotRAGSystem:
     def __init__(self, pdf_directory: str, vector_store_path: str, gemini_api_key: str, embedding_model: str):
@@ -58,12 +118,20 @@ class FitbotRAGSystem:
         self.embeddings = None
         self.vector_store = None
         self.is_initialized = False
+        self.rate_limiter = RateLimiter(min_interval_sec=3.0)  # Max 20 req/min to respect Gemini quota
+        self.response_cache = {}  # Cache untuk mengurangi API calls
         self.vector_store_path.mkdir(parents=True, exist_ok=True)
         self._initialize_embeddings()
 
     def _initialize_embeddings(self):
         try:
             logger.info(f"📦 Memuat model embedding: {self.embedding_model_name}...")
+            try:
+                from langchain_huggingface import HuggingFaceEmbeddings
+            except Exception as e:
+                logger.error("⚠️ `langchain_huggingface` not available: %s", e)
+                self.embeddings = None
+                return
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=self.embedding_model_name,
                 model_kwargs={'device': 'cpu'}
@@ -97,29 +165,48 @@ class FitbotRAGSystem:
             return
 
         # 1. Tetap memuat semua file PDF dari direktori
-        loader = DirectoryLoader(
-            str(self.pdf_directory),
-            glob="**/*.pdf",
-            loader_cls=PyPDFLoader,
-            show_progress=True
-        )
-        documents = loader.load()
+        try:
+            from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
+            from langchain_community.vectorstores import FAISS
+        except Exception as e:
+            logger.error("⚠️ Required LangChain document loaders or FAISS not available: %s", e)
+            logger.error("Please install: langchain-community langchain-huggingface faiss-cpu pypdf sentence-transformers")
+            return
+        try:
+            loader = DirectoryLoader(
+                str(self.pdf_directory),
+                glob="**/*.pdf",
+                loader_cls=PyPDFLoader,
+                show_progress=True
+            )
+            documents = loader.load()
+        except Exception as e:
+            logger.error(f"❌ Error loading PDFs: {e}")
+            return
         if not documents:
             logger.warning("📁 Tidak ada dokumen PDF yang ditemukan.")
             return
         logger.info(f"📚 {len(documents)} halaman dokumen berhasil dimuat.")
 
         # 2. [BARU] Pecah dokumen menjadi chunks yang lebih kecil
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        docs = text_splitter.split_documents(documents)
+        try:
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            docs = text_splitter.split_documents(documents)
+        except Exception as e:
+            logger.error(f"❌ Text splitting failed (missing splitter?): {e}")
+            return
         if not docs:
             logger.warning(" Gagal memecah dokumen menjadi chunks.")
             return
         logger.info(f"📄 Dokumen dipecah menjadi {len(docs)} potongan teks (chunks).")
 
         # 3. Buat vector store dari chunks, bukan dari dokumen utuh
-        self.vector_store = FAISS.from_documents(docs, self.embeddings)
-        self.vector_store.save_local(str(self.vector_store_path))
+        try:
+            self.vector_store = FAISS.from_documents(docs, self.embeddings)
+            self.vector_store.save_local(str(self.vector_store_path))
+        except Exception as e:
+            logger.error(f"❌ Failed to create/save FAISS vector store: {e}")
+            return
         logger.info(f"💾 Vector store berhasil disimpan di {self.vector_store_path}")
         self.is_initialized = True
 
@@ -127,6 +214,11 @@ class FitbotRAGSystem:
     def _load_vector_store(self):
         logger.info("📂 Memuat vector store yang sudah ada...")
         try:
+            try:
+                from langchain_community.vectorstores import FAISS
+            except Exception as e:
+                logger.error("⚠️ FAISS vectorstore class not available: %s", e)
+                raise
             self.vector_store = FAISS.load_local(
                 str(self.vector_store_path),
                 self.embeddings,
@@ -165,19 +257,75 @@ class FitbotRAGSystem:
         return {"answer": answer, "sources": list(set(sources))}
 
     def _call_gemini_api(self, prompt: str) -> str:
+        # Check cache first
+        cache_key = hash(prompt) % (10 ** 8)  # Use hash to normalize prompt
+        if cache_key in self.response_cache:
+            logger.info(f"📦 Cache HIT: returning cached response")
+            return self.response_cache[cache_key]
+        
+        # Rate limit: respect Gemini API per-minute quota
+        self.rate_limiter.wait_if_needed()
+        
         url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
         headers = {"Content-Type": "application/json", "x-goog-api-key": self.gemini_api_key}
         data = {"contents": [{"parts": [{"text": prompt}]}]}
-        try:
-            response = requests.post(url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            if "candidates" in result and result["candidates"]:
-                return result["candidates"][0]["content"]["parts"][0]["text"]
-            return "Tidak ada respons yang dihasilkan."
-        except Exception as e:
-            logger.error(f"❌ Gemini API error: {e}")
-            return f"Error API: {str(e)}"
+        
+        # Fail-fast behavior: keep retries short and bounded to avoid long blocking
+        # requests that waste runtime when the API is rate-limiting. Use
+        # `MAX_GEMINI_ATTEMPTS` and `GEMINI_TIMEOUT_SEC` env vars to tune if needed.
+        max_attempts = int(os.getenv("MAX_GEMINI_ATTEMPTS", "3"))
+        per_request_timeout = int(os.getenv("GEMINI_TIMEOUT_SEC", "20"))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.post(url, headers=headers, json=data, timeout=per_request_timeout)
+                # If rate limited, honor Retry-After briefly but fail quickly after max attempts
+                if response.status_code == 429:
+                    retry_after = response.headers.get('Retry-After')
+                    if retry_after:
+                        wait = min(float(retry_after), 10.0)
+                    else:
+                        wait = min((2 ** attempt) + random.random(), 10.0)
+
+                    logger.warning(f"⚠️ Gemini rate-limited (429). Attempt {attempt}/{max_attempts}. Waiting {wait:.1f}s before next try")
+                    if attempt >= max_attempts:
+                        logger.error(f"❌ Gemini rate limit reached after {attempt} attempts")
+                        return "Error API: Gemini rate-limited. Coba lagi nanti atau aktifkan fallback lokal."
+                    time.sleep(wait)
+                    continue
+
+                # Log non-200 responses for easier diagnosis (400/403/etc.)
+                if response.status_code != 200:
+                    try:
+                        body_text = response.text
+                    except Exception:
+                        body_text = '<unreadable response body>'
+                    logger.error(f"❌ Gemini returned status {response.status_code}: {body_text}")
+                    if response.status_code >= 400 and response.status_code < 500:
+                        return f"Error API: {response.status_code} {body_text}"
+                response.raise_for_status()
+                result = response.json()
+                if "candidates" in result and result["candidates"]:
+                    answer = result["candidates"][0]["content"]["parts"][0]["text"]
+                    self.response_cache[cache_key] = answer
+                    logger.info(f"✅ Gemini API succeeded on attempt {attempt}")
+                    return answer
+
+                logger.warning("⚠️ Gemini returned no candidates")
+                return "Tidak ada respons yang dihasilkan."
+
+            except requests.exceptions.HTTPError as e:
+                status = getattr(e.response, 'status_code', None)
+                logger.error(f"❌ Gemini API HTTP error ({status}): {e}")
+                return f"Error API: {str(e)}"
+
+            except Exception as e:
+                logger.warning(f"⚠️ Gemini API request failed (attempt {attempt}): {e}")
+                if attempt >= max_attempts:
+                    logger.error(f"❌ Gemini API failed after {attempt} attempts: {e}")
+                    return "Error API: Kegagalan jaringan atau respons kosong dari Gemini. Coba lagi nanti."
+                time.sleep(min(2 ** attempt, 8))
+                continue
 
 class GoogleCalendarTools:
     def __init__(self, credentials_file='client_secret.json', token_file='token.pickle'):
@@ -246,124 +394,7 @@ class GoogleCalendarTools:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-class GoogleFitTools:
-    def __init__(self, credentials_file='client_secret.json', token_file='fit_token.pickle'):
-        self.SCOPES = ['https://www.googleapis.com/auth/fitness.activity.read']
-        self.credentials_file = credentials_file
-        self.token_file = token_file
-        self.service = None
-        self.credentials = None
-        self.initialize_service()
 
-    def get_flow(self):
-        return Flow.from_client_secrets_file(
-            self.credentials_file,
-            scopes=self.SCOPES,
-            redirect_uri='http://localhost:8000/auth/fit/callback'
-        )
-
-    def initialize_service(self):
-        creds = None
-        if os.path.exists(self.token_file):
-            with open(self.token_file, 'rb') as token:
-                creds = pickle.load(token)
-        
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                    with open(self.token_file, 'wb') as token:
-                        pickle.dump(creds, token)
-                except Exception as e:
-                    logger.error(f"Token Google Fit refresh failed: {e}")
-                    self.service = None
-                    self.credentials = None
-                    return
-            else:
-                self.service = None
-                self.credentials = None
-                return
-        
-        try:
-            self.service = build('fitness', 'v1', credentials=creds)
-            self.credentials = creds
-            logger.info("✅ Google Fit service initialized")
-        except Exception as e:
-            logger.error(f"❌ Error initializing Google Fit: {e}")
-            self.service = None
-            self.credentials = None
-
-    def get_daily_step_count(self) -> int:
-        if not self.service:
-            logger.warning("Google Fit service not available.")
-            return 0
-
-        today = datetime.now().date()
-        start_time = datetime.combine(today, datetime.min.time())
-        end_time = datetime.now()
-        
-        start_time_ns = int(start_time.timestamp() * 1e9)
-        end_time_ns = int(end_time.timestamp() * 1e9)
-
-        dataset_id = f"{start_time_ns}-{end_time_ns}"
-        
-        try:
-            response = self.service.users().dataSources().datasets().get(
-                userId='me',
-                dataSourceId='derived:com.google.step_count.delta:com.google.android.gms:estimated_steps',
-                datasetId=dataset_id
-            ).execute()
-
-            steps = 0
-            if 'point' in response:
-                for point in response['point']:
-                    for value in point['value']:
-                        steps += value.get('intVal', 0)
-            
-            logger.info(f"✅ Successfully fetched steps: {steps}")
-            return steps
-        except Exception as e:
-            logger.error(f"❌ Could not fetch steps from Google Fit: {e}")
-            return 0
-
-def get_daily_step_count(credentials_json: str) -> int:
-    """
-    Mengambil total langkah harian pengguna dari Google Fit API menggunakan kredensial yang diberikan.
-
-    Args:
-        credentials_json: String JSON dari kredensial OAuth 2.0 pengguna.
-
-    Returns:
-        Jumlah langkah sebagai integer.
-    """
-    try:
-        creds_data = json.loads(credentials_json)
-        credentials = Credentials.from_authorized_user_info(creds_data)
-
-        fit_service = build('fitness', 'v1', credentials=credentials)
-
-        today = datetime.now().date()
-        start_time = datetime.combine(today, datetime.min.time())
-        end_time = datetime.now()
-        start_time_ns = int(start_time.timestamp() * 1e9)
-        end_time_ns = int(end_time.timestamp() * 1e9)
-        dataset_id = f"{start_time_ns}-{end_time_ns}"
-
-        response = fit_service.users().dataSources().datasets().get(
-            userId='me',
-            dataSourceId='derived:com.google.step_count.delta:com.google.android.gms:estimated_steps',
-            datasetId=dataset_id
-        ).execute()
-
-        steps = sum(
-            value.get('intVal', 0)
-            for point in response.get('point', [])
-            for value in point.get('value', [])
-        )
-        return steps
-    except Exception as e:
-        print(f"Error getting step count: {e}")
-        return 0
 
 class EnhancedFitBot:
     def __init__(self, api_key, credentials_file='client_secret.json'):
@@ -373,9 +404,6 @@ class EnhancedFitBot:
         
         logger.info("🔧 Initializing Google Calendar Tools...")
         self.calendar_tools = GoogleCalendarTools(credentials_file)
-
-        logger.info("🔧 Initializing Google Fit Tools...")
-        self.fit_tools = GoogleFitTools(credentials_file)
         
         logger.info("📚 Initializing RAG System...")
         pdf_dir = Path(__file__).parent.parent / "Dokumen Training"
@@ -396,9 +424,6 @@ class EnhancedFitBot:
 
         TOPIK YANG DIIJINKAN: latihan gym, program, recovery/istirahat, jadwal, nutrisi fitness, penjadwalan kalender.
         TOPIK DITOLAK: diagnosis medis/terapi, keluhan penyakit, topik non-fitness. Jawab singkat menolak dan arahkan ke topik fitness.
-
-        KEMAMPUAN TAMBAHAN:
-        - Kamu memiliki akses ke data langkah harian pengguna dari Google Fit. Gunakan informasi ini untuk memberikan saran yang lebih personal jika relevan.
 
         STRUKTUR OUTPUT WAJIB (Markdown):
         1) ### Ringkas — 2–3 kalimat inti jawaban.
@@ -437,25 +462,18 @@ class EnhancedFitBot:
 
 
     def chat_general(self, user_question: str) -> Dict[str, Any]:
-        """Menangani permintaan umum dengan logika agentic untuk Google Fit dan Kalender."""
+        """Menangani permintaan umum dengan logika agentic untuk Kalender."""
         logger.info(f"🤖 Processing general query: {user_question[:50]}...")
         
-        context_info = ""
-
-        if any(keyword in user_question.lower() for keyword in ['langkah', 'aktif', 'aktivitas', 'jalan kaki']) and self.fit_tools.service:
-            logger.info("🔍 Intent detected: User is asking about activity. Fetching steps...")
-            steps = self.fit_tools.get_daily_step_count()
-            if steps > 0:
-                context_info = f"\n\nKONTEKS TAMBAHAN: Pengguna sudah berjalan {steps} langkah hari ini."
-                logger.info(f"📈 Steps fetched: {steps}. Adding to context.")
-            else:
-                context_info = "\n\nKONTEKS TAMBAHAN: Data langkah pengguna hari ini masih kosong atau tidak tersedia."
-                
-      
-        prompt = f"{self.system_prompt}{context_info}\n\nPERTANYAAN USER: {user_question}"
+        prompt = f"{self.system_prompt}\n\nPERTANYAAN USER: {user_question}"
         
         response_text = self.rag_system._call_gemini_api(prompt)
-        
+        # Ensure response_text is a string to avoid passing None into regex/search
+        if response_text is None:
+            response_text = "Error API: no response from Gemini"
+        elif not isinstance(response_text, str):
+            response_text = str(response_text)
+
         calendar_request = self._parse_calendar_request(response_text)
         if calendar_request:
             logger.info(f"✅ Valid calendar JSON found: {calendar_request}")
@@ -484,16 +502,24 @@ class EnhancedFitBot:
         """Menangani permintaan khusus RAG."""
         if not self.rag_system or not self.rag_system.is_initialized:
             return {"answer": "Maaf, sistem pencarian dokumen sedang tidak tersedia."}
-        
+
         logger.info(f"🤖 Processing query with RAG: {user_question[:50]}...")
         rag_result = self.rag_system.query_with_rag(user_question)
-        
-        response = rag_result.get('answer', 'Tidak ada jawaban yang ditemukan.')
-        sources = rag_result.get('sources', [])
-        
-        if sources:
-            response += "\n\n*Sumber: " + ", ".join(sources) + "*"
-        
+
+        # Ensure answer is a string and sources is a list to avoid TypeErrors
+        response = rag_result.get('answer') or 'Tidak ada jawaban yang ditemukan.'
+        if not isinstance(response, str):
+            response = str(response)
+
+        sources = rag_result.get('sources') or []
+        try:
+            sources_list = [str(s) for s in sources]
+        except Exception:
+            sources_list = []
+
+        if sources_list:
+            response += "\n\n*Sumber: " + ", ".join(sources_list) + "*"
+
         response += "\n\n⚠️ **DISCLAIMER:** Informasi ini dari dokumen. Selalu konsultasi dengan ahli."
         return {"answer": response}
 
@@ -562,48 +588,7 @@ def auth_status():
         return {"authenticated": False}
     return {"authenticated": fitbot.calendar_tools.service is not None}
 
-@app.get("/authorize-fit")
-def authorize_fit():
-    if not fitbot:
-        raise HTTPException(status_code=500, detail="FitBot not initialized")
-    flow = fitbot.fit_tools.get_flow()
-    authorization_url, state = flow.authorization_url(
-        access_type='offline', 
-        prompt='consent'
-    )
-    return {"authorization_url": authorization_url}
 
-@app.get("/auth/fit/callback")
-def auth_fit_callback(code: str):
-    if not fitbot:
-        raise HTTPException(status_code=500, detail="FitBot not initialized")
-    try:
-        flow = fitbot.fit_tools.get_flow()
-        flow.fetch_token(code=code)
-        
-        with open(fitbot.fit_tools.token_file, 'wb') as token:
-            pickle.dump(flow.credentials, token)
-        
-        fitbot.fit_tools.initialize_service()
-        
-        return RedirectResponse(url="http://localhost:3000?auth_fit=success")
-    except Exception as e:
-        logger.error(f"Fit auth callback error: {e}")
-        return RedirectResponse(url=f"http://localhost:3000?auth_fit=failed&error={str(e)}")
-
-@app.get("/auth/fit/status")
-def auth_fit_status():
-    if not fitbot:
-        return {"authenticated": False}
-    return {"authenticated": fitbot.fit_tools.service is not None}
-
-@app.get("/get-steps")
-def get_steps():
-    if not fitbot or not fitbot.fit_tools.service:
-        raise HTTPException(status_code=403, detail="Google Fit not authenticated.")
-    
-    steps = fitbot.fit_tools.get_daily_step_count()
-    return {"steps": steps}
 
 
 if __name__ == "__main__":

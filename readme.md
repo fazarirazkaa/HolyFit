@@ -11,10 +11,10 @@ AI for Good Health and Well-being
 
 | **Name**                   | **Role**               |
 |--------------------------- |------------------------|
-| Edsel Septa Haryanto       | Backend                |
-| Falah Razan Hibrizi        | Frontend               |
-| Farhan Hamzah              | Backend                |
-| Fazari Razka Davira        | Frontend               |
+|                            |                        |
+|                            |                        |
+|                            |                        |
+|                            |                        |
 
 
 ---
@@ -27,7 +27,6 @@ AI for Good Health and Well-being
 - **🌐 Aksesibilitas UI**: Antarmuka yang mudah diakses (accessible design), mendukung navigasi keyboard dan screen reader, serta memiliki kontras warna yang optimal.
 - **📆 Buat jadwal latihan di google kalender**: Memudahkan pengguna untuk menjadwalkan latihan fitness dengan integrasi langsung dengan google calendar
 - **⚙️ Pencarian lebih faktual dan kredibel**: Dengan implementasi Retrieval-augmented generation chatbot memiliki kemampuan mempelajari jurnal-jurnal pilihan untuk memberikan jawaban yang berdasarkan fakta
-- **❤️‍🩹 Koneksi langung dengan Google Fit** : Dengan implementasi Ai Agentic yang terkoneksi langsung dengan google fit dapat mentracking gerakan pengguna untuk memberikan hasil jawaban yang lebih personal
 
 
 
@@ -51,7 +50,7 @@ AI for Good Health and Well-being
 
 ### Step 1. Clone the Repository
 ```bash
-git clone https://github.com/EdselSpth/Fitbot-AI-Chatbot.git
+git clone https://github.com/fazarirazkaa/HolyFit.git
 ```
 
 
@@ -73,21 +72,9 @@ npm run dev
 
 ### Step 4 Buka localhost:3000 di browser
 
-### Login Authentikasi Google dengan Akun berikut
-```bash
-email : devtestingedsel@gmail.com
-password : DevTesting130904
+### Login Authentikasi Google 
 ```
 
 ## 📋 Requirements (optional)
 - Node.js versi 18.18 atau lebih baru.
 - Python versi 3.10 atau lebih baru.
-
-## Video Demo Tugas 1
-[![<Teks Alt>](https://img.youtube.com/vi/FLGonXn21D8/0.jpg)](https://www.youtube.com/watch?v=FLGonXn21D8)
-
-## Video Demo Tugas 2
-[![Video Demo Enhanced FitBot](https://img.youtube.com/vi/anXcXKllBnY/0.jpg)](https://www.youtube.com/watch?v=anXcXKllBnY)
-
-## Video Demo Tugas 3
-[![Video Demo Enhanced FitBot](https://img.youtube.com/vi/X1tAmENjQ5w/0.jpg)](https://www.youtube.com/watch?v=X1tAmENjQ5w)

@@ -28,7 +28,6 @@ export default function FitnessChatbot() {
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [isFitAuthenticated, setIsFitAuthenticated] = useState(false) // State baru untuk Google Fit
   const [useRAG, setUseRAG] = useState(false) // State for RAG toggle
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -49,33 +48,14 @@ export default function FitnessChatbot() {
       } catch (error) {
         console.error("Error checking auth status:", error)
       }
-    }
-
-    // Cek status otentikasi Google Fit
-    const checkFitAuthStatus = async () => {
-      try {
-        const res = await fetch("http://localhost:8000/auth/fit/status");
-        const data = await res.json();
-        setIsFitAuthenticated(data.authenticated);
-        if (data.authenticated) {
-            setMessages(prev => [...prev, {role: 'assistant', content: 'Berhasil terhubung dengan Google Fit! Anda dapat melihat jumlah langkah harian.', timestamp: new Date()}]);
-        }
-      } catch (error) {
-        console.error("Error checking Fit auth status:", error);
-      }
     };
 
     checkAuthStatus()
-    checkFitAuthStatus() // Panggil fungsi cek status Google Fit
+    
 
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('auth') === 'success') {
         setIsAuthenticated(true);
-        window.history.replaceState({}, document.title, "/");
-    }
-    // Handle callback dari Google Fit
-    if (urlParams.get('auth_fit') === 'success') {
-        setIsFitAuthenticated(true);
         window.history.replaceState({}, document.title, "/");
     }
 
@@ -151,45 +131,7 @@ export default function FitnessChatbot() {
       }
   };
 
-  // Fungsi baru untuk menghubungkan Google Fit
-  const connectGoogleFit = async () => {
-    try {
-      const res = await fetch("http://localhost:8000/authorize-fit");
-      const data = await res.json();
-      if (data.authorization_url) {
-        window.location.href = data.authorization_url;
-      }
-    } catch (error) {
-      console.error("Failed to connect Google Fit:", error);
-    }
-  };
 
-  // Fungsi baru untuk mengambil data langkah
-  const getStepCount = async () => {
-    if (!isFitAuthenticated) return;
-    setIsLoading(true);
-    try {
-      const res = await fetch("http://localhost:8000/get-steps");
-      const data = await res.json();
-      const steps = data.steps || 0;
-      const stepMessage: Message = {
-        role: "assistant",
-        content: `👟 Jumlah langkah Anda hari ini adalah **${steps}** langkah. Terus bergerak! `,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, stepMessage]);
-    } catch (error) {
-      console.error("Failed to get steps:", error);
-      const errorMessage: Message = {
-        role: "assistant",
-        content: "Gagal mengambil data langkah dari Google Fit.",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const markdownComponents = {
     h3: ({ children }: any) => <div className="text-xl font-bold mt-1 mb-2">{children}</div>,
@@ -215,23 +157,6 @@ export default function FitnessChatbot() {
             ) : (
                 <button onClick={handleLogin} className='px-4 py-2 text-sm bg-blue-600/80 hover:bg-blue-700/80 text-white border border-blue-500/50 rounded-full transition-all duration-200'>Connect Calendar</button>
             )}
-
-            {/* Tombol Baru untuk Google Fit */} 
-            {!isFitAuthenticated ? (
-                <button onClick={connectGoogleFit} className='px-4 py-2 text-sm bg-green-600/80 hover:bg-green-700/80 text-white border border-green-500/50 rounded-full transition-all duration-200'>
-                    Connect Google Fit
-                </button>
-            ) : (
-              <button onClick={getStepCount} className="px-4 py-2 text-sm bg-teal-600/80 hover:bg-teal-700/80 text-white border border-teal-500/50 rounded-full transition-all duration-200 backdrop-blur-sm shadow-md hover:shadow-lg ring-1 ring-teal-500/20 hover:ring-teal-400/30 disabled:opacity-50 disabled:cursor-not-allowed" disabled={isLoading}>
-                👟 Cek Langkah Harian
-              </button>
-            )}
-
-            {/* Indikator Status Baru */}
-            <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full animate-pulse ${isFitAuthenticated ? 'bg-green-400' : 'bg-yellow-400'}`}></div>
-                <span className={`text-xs font-medium ${isFitAuthenticated ? 'text-green-400' : 'text-yellow-400'}`}>{isFitAuthenticated ? 'Fit Connected' : 'Fit Disconnected'}</span>
-            </div>
         </div>
       </div>
 
