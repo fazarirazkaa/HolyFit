@@ -1,8 +1,8 @@
 
-# `FITBOT - Your Personal Fitness Assistant`
+# `HOLYFIT - Your Personal Fitness Assistant`
 
 **Description**  
-FitBot adalah asisten fitness personal berbasis artificial intelligence yang dirancang untuk menjadi teman andalanmu. Mendukung misi SDGs "AI for Good Health and Well-being," FitBot fokus pada sisi kebugaran melalui fitness dengan menyediakan program latihan yang disesuaikan, tips nutrisi berbasis sains, dan semua jawaban dari pertanyaan kamu. FitBot siap membantumu berlatih lebih cerdas dan mencapai targetmu lebih cepat.
+HolyFit adalah asisten fitness personal berbasis artificial intelligence yang dirancang untuk menjadi teman andalanmu. Mendukung misi SDGs "AI for Good Health and Well-being," HolyFit fokus pada sisi kebugaran melalui fitness dengan menyediakan program latihan yang disesuaikan, tips nutrisi berbasis sains, dan semua jawaban dari pertanyaan kamu. HolyFit siap membantumu berlatih lebih cerdas dan mencapai targetmu lebih cepat.
 
 **Theme** 
 AI for Good Health and Well-being
@@ -56,7 +56,7 @@ git clone https://github.com/fazarirazkaa/HolyFit.git
 
 ### Step 2 Run API Backend pada Python di Terminal Baru
 ```bash
-cd Fitbot-AI-Chatbot
+cd HolyFit
 cd google
 pip install -r requirements.txt
 python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -64,7 +64,7 @@ python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ### Step 3 Run Frontend di Terminal Baru
 ```bash
-cd Fitbot-AI-Chatbot
+cd HolyFit
 cd fe
 npm install
 npm run dev

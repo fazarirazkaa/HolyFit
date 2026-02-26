@@ -13,7 +13,7 @@ try:
     api_key = m.get_api_key_from_file()
     bot = m.EnhancedFitBot(api_key) if api_key else None
     if not bot:
-        print('FitBot not initialized (check API key).')
+        print('HolyFit not initialized (check API key).')
     elif not getattr(bot, 'rag_system', None):
         print('RAG system not present on bot.')
     else:

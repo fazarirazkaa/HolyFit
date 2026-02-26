@@ -21,7 +21,7 @@ export default function FitnessChatbot() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: "Halo! Saya FitBot, asisten fitness pribadi Anda! 💪 Siap untuk memulai perjalanan fitness yang luar biasa? Tanyakan apa saja tentang workout, nutrisi, atau tips kesehatan!",
+      content: "Halo! HolyFit disini, asisten fitness pribadi Anda! 💪 Siap untuk memulai perjalanan fitness yang luar biasa? Tanyakan apa saja tentang workout, nutrisi, atau tips kesehatan!",
       timestamp: new Date(),
     },
   ])
@@ -148,7 +148,7 @@ export default function FitnessChatbot() {
           <img src="/assets/gymbot-logo.png" alt="Gym Logo" className="w-full h-full object-cover rounded-full" />
         </div>
         <div className="flex-1">
-          <h1 className="font-bold text-xl text-white">FitBot</h1>
+          <h1 className="font-bold text-xl text-white">HolyFit</h1>
           <p className="text-sm text-slate-300">Your Personal Fitness Assistant</p>
         </div>
         <div className="flex items-center gap-4">
@@ -195,7 +195,7 @@ export default function FitnessChatbot() {
                   <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}></div>
                   <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></div>
                 </div>
-                <span className="text-sm text-slate-300">FitBot sedang mengetik...</span>
+                <span className="text-sm text-slate-300">HolyFit sedang mengetik...</span>
               </div>
             </div>
           </div>

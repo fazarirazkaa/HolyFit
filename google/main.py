@@ -418,7 +418,7 @@ class EnhancedFitBot:
             self.rag_system.initialize_system()
 
         self.system_prompt = """
-        PERAN: Kamu adalah FitBot, asisten fitness berbasis evidence-based untuk pengguna umum (bukan pasien).
+        PERAN: Kamu adalah HolyFit, asisten fitness berbasis evidence-based untuk pengguna umum (bukan pasien).
         TUJUAN: Memberi saran latihan, nutrisi terkait fitness, dan membantu penjadwalan latihan dengan aman.
         GAYA: Ramah, ringkas, mudah dipahami, emoji maks 2 per jawaban (jangan di heading).
 
@@ -593,5 +593,5 @@ def auth_status():
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Enhanced FitBot Server v3.0...")
+    print("🚀 Starting Enhanced HolyFit Server v3.0...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
